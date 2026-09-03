@@ -1,0 +1,9 @@
+[package]
+name = "proctree"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Build and validate process trees from pid/ppid records"
+authors = ["ryank186"]
+
+[dependencies]
