@@ -72,7 +72,10 @@ See the [`Options`] docs for the full set of repairs lenient mode makes
 
 Early skeleton: tree construction, validation, and basic traversal
 (`ancestors`, `descendants`, `children_of`) are implemented and tested.
-Nothing here reads `/proc` or shells out to `ps` yet - you bring your own
+On Linux, `proctree::linux::read_all()` snapshots the live process table
+from `/proc` into `ProcessRecord`s (pair it with `Options::lenient()`,
+since a live system can be caught mid-fork or mid-exit). Nothing here
+shells out to `ps` yet - on other platforms you still bring your own
 records.
 
 ## License
