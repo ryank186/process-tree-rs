@@ -74,9 +74,10 @@ Early skeleton: tree construction, validation, and basic traversal
 (`ancestors`, `descendants`, `children_of`) are implemented and tested.
 On Linux, `proctree::linux::read_all()` snapshots the live process table
 from `/proc` into `ProcessRecord`s (pair it with `Options::lenient()`,
-since a live system can be caught mid-fork or mid-exit). Nothing here
-shells out to `ps` yet - on other platforms you still bring your own
-records.
+since a live system can be caught mid-fork or mid-exit).
+`proctree::ps::parse_ps_output()` parses the text you get back from
+running `ps -eo pid,ppid,comm` yourself, so it works on any platform
+that has a `ps` - this crate never runs the command for you.
 
 ## License
 
