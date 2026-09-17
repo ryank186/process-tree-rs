@@ -198,6 +198,114 @@ impl ProcessTree {
         }
         result
     }
+
+    /// Extract the subtree rooted at `pid` as a standalone tree.
+    ///
+    /// The returned tree contains `pid` (now its only root) and every
+    /// descendant of `pid`, with everything else pruned away. Pids
+    /// outside that subtree, including `pid`'s own ancestors, don't
+    /// appear in it. If `pid` isn't in the tree, the result is empty.
+    pub fn subtree(&self, pid: u32) -> ProcessTree {
+        let Some(root_record) = self.records.get(&pid) else {
+            return ProcessTree {
+                records: HashMap::new(),
+                parent: HashMap::new(),
+                children: HashMap::new(),
+                roots: Vec::new(),
+            };
+        };
+
+        let mut records = HashMap::new();
+        records.insert(pid, root_record.clone());
+        let mut parent = HashMap::new();
+        let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+
+        let mut queue: VecDeque<u32> = self.children_of(pid).iter().copied().collect();
+        if let Some(kids) = self.children.get(&pid) {
+            children.insert(pid, kids.clone());
+        }
+        while let Some(cur) = queue.pop_front() {
+            records.insert(cur, self.records[&cur].clone());
+            parent.insert(cur, self.parent[&cur]);
+            if let Some(kids) = self.children.get(&cur) {
+                children.insert(cur, kids.clone());
+                queue.extend(kids.iter().copied());
+            }
+        }
+
+        ProcessTree {
+            records,
+            parent,
+            children,
+            roots: vec![pid],
+        }
+    }
+
+    /// Keep only the pids for which `predicate` returns `true`, closing
+    /// the gaps left by the rest.
+    ///
+    /// A dropped pid's children are reattached to its nearest surviving
+    /// ancestor; if none of its ancestors survive either, they become
+    /// roots. This is different from filtering the input records
+    /// before calling [`ProcessTree::build`], which would turn the
+    /// children of any dropped process into [`TreeError::UnknownParent`]
+    /// failures (or orphaned roots, under [`Options::lenient`]) instead
+    /// of preserving their place in the hierarchy.
+    pub fn retain(&self, mut predicate: impl FnMut(&ProcessRecord) -> bool) -> ProcessTree {
+        let order = self.preorder_pids();
+        let mut kept: HashMap<u32, bool> = HashMap::with_capacity(order.len());
+        let mut effective_parent: HashMap<u32, Option<u32>> = HashMap::with_capacity(order.len());
+
+        for &pid in &order {
+            kept.insert(pid, predicate(&self.records[&pid]));
+
+            let nearest = match self.parent.get(&pid) {
+                None => None,
+                Some(ppid) if kept[ppid] => Some(*ppid),
+                Some(ppid) => effective_parent[ppid],
+            };
+            effective_parent.insert(pid, nearest);
+        }
+
+        let mut records = HashMap::new();
+        let mut parent = HashMap::new();
+        let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+        let mut roots = Vec::new();
+
+        for &pid in &order {
+            if !kept[&pid] {
+                continue;
+            }
+            records.insert(pid, self.records[&pid].clone());
+            match effective_parent[&pid] {
+                Some(ppid) => {
+                    parent.insert(pid, ppid);
+                    children.entry(ppid).or_default().push(pid);
+                }
+                None => roots.push(pid),
+            }
+        }
+
+        ProcessTree {
+            records,
+            parent,
+            children,
+            roots,
+        }
+    }
+
+    /// Every pid in the tree, roots first and each subtree visited
+    /// before its next sibling, preserving the input order recorded
+    /// when the tree was built.
+    fn preorder_pids(&self) -> Vec<u32> {
+        let mut out = Vec::with_capacity(self.records.len());
+        let mut stack: Vec<u32> = self.roots.iter().rev().copied().collect();
+        while let Some(pid) = stack.pop() {
+            out.push(pid);
+            stack.extend(self.children_of(pid).iter().rev().copied());
+        }
+        out
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -356,5 +464,84 @@ mod tests {
         let tree = ProcessTree::build(records, Options::lenient()).unwrap();
         assert_eq!(tree.len(), 2);
         assert_eq!(tree.roots().len(), 1);
+    }
+
+    fn sample_tree() -> ProcessTree {
+        let records = vec![
+            ProcessRecord::new(1, 0, "init"),
+            ProcessRecord::new(2, 1, "agent"),
+            ProcessRecord::new(3, 2, "worker-a"),
+            ProcessRecord::new(4, 2, "worker-b"),
+            ProcessRecord::new(5, 4, "helper"),
+            ProcessRecord::new(6, 0, "other-root"),
+        ];
+        ProcessTree::build(records, Options::strict()).unwrap()
+    }
+
+    #[test]
+    fn subtree_extracts_branch() {
+        let tree = sample_tree();
+        let sub = tree.subtree(2);
+
+        assert_eq!(sub.len(), 4);
+        assert_eq!(sub.roots(), &[2]);
+        assert!(sub.parent_of(2).is_none());
+        assert_eq!(sub.children_of(2), &[3, 4]);
+        assert_eq!(sub.children_of(4), &[5]);
+        assert!(sub.get(1).is_none());
+        assert!(sub.get(6).is_none());
+    }
+
+    #[test]
+    fn subtree_of_leaf_is_just_that_pid() {
+        let tree = sample_tree();
+        let sub = tree.subtree(5);
+        assert_eq!(sub.len(), 1);
+        assert_eq!(sub.roots(), &[5]);
+        assert!(sub.children_of(5).is_empty());
+    }
+
+    #[test]
+    fn subtree_of_unknown_pid_is_empty() {
+        let tree = sample_tree();
+        let sub = tree.subtree(999);
+        assert!(sub.is_empty());
+        assert!(sub.roots().is_empty());
+    }
+
+    #[test]
+    fn retain_reattaches_children_to_nearest_survivor() {
+        let tree = sample_tree();
+        // drop "agent" (pid 2); its children should reattach to its
+        // parent, "init" (pid 1), rather than becoming orphaned roots.
+        let filtered = tree.retain(|r| r.pid != 2);
+
+        assert_eq!(filtered.len(), 5);
+        assert!(filtered.get(2).is_none());
+        assert_eq!(filtered.children_of(1), &[3, 4]);
+        assert_eq!(filtered.parent_of(3), Some(1));
+        assert_eq!(filtered.children_of(4), &[5]);
+    }
+
+    #[test]
+    fn retain_promotes_to_root_when_no_ancestor_survives() {
+        let tree = sample_tree();
+        // drop both "init" and "agent"; worker-a and worker-b have no
+        // surviving ancestor left, so they become roots themselves.
+        let filtered = tree.retain(|r| r.pid != 1 && r.pid != 2);
+
+        assert_eq!(filtered.len(), 4);
+        assert!(filtered.roots().contains(&3));
+        assert!(filtered.roots().contains(&4));
+        assert_eq!(filtered.children_of(4), &[5]);
+    }
+
+    #[test]
+    fn retain_keeping_everything_is_a_no_op() {
+        let tree = sample_tree();
+        let filtered = tree.retain(|_| true);
+        assert_eq!(filtered.len(), tree.len());
+        assert_eq!(filtered.roots(), tree.roots());
+        assert_eq!(filtered.children_of(2), tree.children_of(2));
     }
 }
