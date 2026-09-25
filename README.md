@@ -72,7 +72,9 @@ See the [`Options`] docs for the full set of repairs lenient mode makes
 
 Early skeleton: tree construction, validation, and basic traversal
 (`ancestors`, `descendants`, `children_of`) are implemented and tested.
-`ProcessTree::subtree()` pulls out just the branch rooted at a pid, and
+`ProcessTree::preorder()` and `ProcessTree::postorder()` return iterators
+over every pid, parent-before-children and children-before-parent
+respectively. `ProcessTree::subtree()` pulls out just the branch rooted at a pid, and
 `ProcessTree::retain()` filters the tree down to pids matching a
 predicate, reattaching the children of anything dropped to its nearest
 surviving ancestor instead of orphaning them.

@@ -33,4 +33,4 @@ mod tree;
 pub mod linux;
 pub mod ps;
 
-pub use tree::{Options, ProcessRecord, ProcessTree, TreeError};
+pub use tree::{Options, Postorder, Preorder, ProcessRecord, ProcessTree, TreeError};

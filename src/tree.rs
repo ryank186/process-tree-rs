@@ -298,13 +298,73 @@ impl ProcessTree {
     /// before its next sibling, preserving the input order recorded
     /// when the tree was built.
     fn preorder_pids(&self) -> Vec<u32> {
-        let mut out = Vec::with_capacity(self.records.len());
-        let mut stack: Vec<u32> = self.roots.iter().rev().copied().collect();
-        while let Some(pid) = stack.pop() {
-            out.push(pid);
-            stack.extend(self.children_of(pid).iter().rev().copied());
+        self.preorder().collect()
+    }
+
+    /// Visit every pid in the tree, a parent before any of its
+    /// descendants, preserving input order among siblings.
+    pub fn preorder(&self) -> Preorder<'_> {
+        Preorder {
+            tree: self,
+            stack: self.roots.iter().rev().copied().collect(),
         }
-        out
+    }
+
+    /// Visit every pid in the tree, a parent after all of its
+    /// descendants, preserving input order among siblings.
+    pub fn postorder(&self) -> Postorder<'_> {
+        let mut stack = Vec::with_capacity(self.roots.len());
+        for &root in self.roots.iter().rev() {
+            stack.push((root, 0));
+        }
+        Postorder { tree: self, stack }
+    }
+}
+
+/// Iterator returned by [`ProcessTree::preorder`].
+pub struct Preorder<'a> {
+    tree: &'a ProcessTree,
+    stack: Vec<u32>,
+}
+
+impl<'a> Iterator for Preorder<'a> {
+    type Item = u32;
+
+    fn next(&mut self) -> Option<u32> {
+        let pid = self.stack.pop()?;
+        self.stack.extend(self.tree.children_of(pid).iter().rev().copied());
+        Some(pid)
+    }
+}
+
+/// Iterator returned by [`ProcessTree::postorder`].
+///
+/// Each stack entry tracks a pid alongside how many of its children
+/// have already been pushed, so a node is only popped and yielded
+/// once every child beneath it has been.
+pub struct Postorder<'a> {
+    tree: &'a ProcessTree,
+    stack: Vec<(u32, usize)>,
+}
+
+impl<'a> Iterator for Postorder<'a> {
+    type Item = u32;
+
+    fn next(&mut self) -> Option<u32> {
+        loop {
+            let &(pid, next_child) = self.stack.last()?;
+            let children = self.tree.children_of(pid);
+            match children.get(next_child) {
+                Some(&child) => {
+                    self.stack.last_mut().unwrap().1 += 1;
+                    self.stack.push((child, 0));
+                }
+                None => {
+                    self.stack.pop();
+                    return Some(pid);
+                }
+            }
+        }
     }
 }
 
@@ -534,6 +594,30 @@ mod tests {
         assert!(filtered.roots().contains(&3));
         assert!(filtered.roots().contains(&4));
         assert_eq!(filtered.children_of(4), &[5]);
+    }
+
+    #[test]
+    fn preorder_visits_parents_before_children() {
+        let tree = sample_tree();
+        assert_eq!(tree.preorder().collect::<Vec<_>>(), vec![1, 2, 3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn postorder_visits_children_before_parents() {
+        let tree = sample_tree();
+        assert_eq!(tree.postorder().collect::<Vec<_>>(), vec![3, 5, 4, 2, 1, 6]);
+    }
+
+    #[test]
+    fn preorder_and_postorder_agree_on_leaf_and_empty_trees() {
+        let empty = ProcessTree::build(Vec::new(), Options::strict()).unwrap();
+        assert_eq!(empty.preorder().count(), 0);
+        assert_eq!(empty.postorder().count(), 0);
+
+        let single = ProcessTree::build(vec![ProcessRecord::new(1, 0, "init")], Options::strict())
+            .unwrap();
+        assert_eq!(single.preorder().collect::<Vec<_>>(), vec![1]);
+        assert_eq!(single.postorder().collect::<Vec<_>>(), vec![1]);
     }
 
     #[test]
